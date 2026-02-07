@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# uv
+uv.lock
+
+# Project specific
+.rednote-mcp/
+cookies.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Planning files (dev only)
+task_plan.md
+findings.md
+progress.md

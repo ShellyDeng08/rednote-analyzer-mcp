@@ -1,0 +1,55 @@
+[project]
+name = "rednote-analyzer-mcp"
+version = "0.1.0"
+description = "An MCP server that enables LLMs to analyze, understand, and generate RedNote (小红书) content through structured tools and prompts."
+readme = "README.md"
+authors = [
+    { name = "xueliandeng", email = "xuelian.xldeng@bytedance.com" }
+]
+requires-python = ">=3.11"
+license = "MIT"
+keywords = ["mcp", "rednote", "xiaohongshu", "小红书", "llm", "ai"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp[cli]",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+rednote-analyzer-mcp = "rednote_analyzer_mcp.server:main"
+
+[project.optional-dependencies]
+browser = [
+    "playwright>=1.40",
+]
+
+[build-system]
+requires = ["uv_build>=0.10.0,<0.11.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
