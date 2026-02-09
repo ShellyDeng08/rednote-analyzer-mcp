@@ -11,7 +11,6 @@ import os
 from mcp.server.fastmcp import FastMCP
 
 from rednote_analyzer_mcp.adapters.base import RedNoteAdapter
-from rednote_analyzer_mcp.adapters.mock import MockAdapter
 from rednote_analyzer_mcp.tools import analysis as analysis_tools
 from rednote_analyzer_mcp.tools import discovery as discovery_tools
 from rednote_analyzer_mcp.tools import generation as generation_tools
@@ -27,18 +26,28 @@ mcp = FastMCP(
     ),
 )
 
+# Module-level singleton adapter.  Created once on first tool call and reused
+# for the lifetime of the server process.  This is critical for the Playwright
+# adapter which maintains a browser instance and an ``xsec_token`` cache that
+# must persist across tool calls.
+_adapter: RedNoteAdapter | None = None
+
 
 def _get_adapter() -> RedNoteAdapter:
-    """Get the configured adapter. Defaults to MockAdapter.
+    """Return the shared adapter singleton, creating it on first call.
 
     Set REDNOTE_ADAPTER env var to switch:
       - "mock" (default): Uses built-in sample data
-      - "playwright": Uses real browser to scrape xiaohongshu.com
+      - "playwright": Uses real browser to fetch live xiaohongshu.com data
 
     For playwright adapter, also set:
       - REDNOTE_HEADLESS=false (first run, to log in interactively)
       - REDNOTE_COOKIE_PATH (optional, custom cookie file path)
     """
+    global _adapter  # noqa: PLW0603
+    if _adapter is not None:
+        return _adapter
+
     adapter_type = os.environ.get("REDNOTE_ADAPTER", "mock")
     if adapter_type == "playwright":
         try:
@@ -51,8 +60,13 @@ def _get_adapter() -> RedNoteAdapter:
             )
         headless = os.environ.get("REDNOTE_HEADLESS", "true").lower() == "true"
         cookie_path = os.environ.get("REDNOTE_COOKIE_PATH")
-        return PlaywrightAdapter(headless=headless, cookie_path=cookie_path)
-    return MockAdapter()
+        _adapter = PlaywrightAdapter(headless=headless, cookie_path=cookie_path)
+    else:
+        from rednote_analyzer_mcp.adapters.mock import MockAdapter
+
+        _adapter = MockAdapter()
+
+    return _adapter
 
 
 # --- Discovery Tools ---

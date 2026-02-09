@@ -1,11 +1,24 @@
 """Playwright browser adapter for real RedNote data.
 
 Uses a headless (or visible) browser to navigate xiaohongshu.com and extract
-real note data. Requires authentication — on first run, set REDNOTE_HEADLESS=false
+real note data. The adapter works in two modes:
+
+  - **Search**: Intercepts the XHS internal JSON API response from
+    ``edith.xiaohongshu.com/api/sns/web/v1/search/notes`` which provides
+    structured data (title, author, engagement counts, images, etc.).
+  - **Note detail**: Extracts data from the rendered DOM (``#detail-title``,
+    ``#detail-desc``, ``.like-wrapper .count``, etc.) after the page's
+    Vue SPA hydrates.
+  - **Comments**: Intercepts the comment JSON API from
+    ``edith.xiaohongshu.com/api/sns/web/v2/comment/page``.
+
+Requires authentication — on first run, set ``REDNOTE_HEADLESS=false``
 to log in interactively. Cookies are saved for subsequent headless runs.
 
-Install: pip install rednote-analyzer-mcp[browser]
-Then:    playwright install chromium
+Install::
+
+    pip install rednote-analyzer-mcp[browser]
+    playwright install chromium
 """
 
 from __future__ import annotations
@@ -26,10 +39,15 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_COOKIE_PATH = Path.home() / ".rednote-mcp" / "cookies.json"
 DEFAULT_TIMEOUT = 30000
+CONTENT_WAIT_MS = 8000  # Time to wait for SPA content to load
 XHS_BASE_URL = "https://www.xiaohongshu.com"
 XHS_SEARCH_URL = f"{XHS_BASE_URL}/search_result"
 XHS_EXPLORE_URL = f"{XHS_BASE_URL}/explore"
 XHS_USER_URL = f"{XHS_BASE_URL}/user/profile"
+
+# API endpoints (used for response interception)
+SEARCH_API = "/api/sns/web/v1/search/notes"
+COMMENT_API = "/api/sns/web/v2/comment/page"
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -37,25 +55,17 @@ USER_AGENT = (
     "Chrome/120.0.0.0 Safari/537.36"
 )
 
-# CSS selectors — centralized for easy updating when XHS changes their DOM
-SELECTORS = {
-    "login_wall": 'text="登录后查看搜索结果"',
-    "search_note_card": 'section.note-item',
-    "search_note_card_alt": '[class*="note-item"], [class*="search-result"] a[href*="/explore/"]',
-    "note_container": '#noteContainer, [class*="note-detail"], [class*="note-container"]',
-    "note_title": '[class*="title"], h1',
-    "note_content": '#detail-desc, [class*="desc"], [class*="content"]',
-    "note_likes": '[class*="like"] [class*="count"], [class*="like-wrapper"] span',
-    "note_collects": '[class*="collect"] [class*="count"], [class*="collect-wrapper"] span',
-    "note_comments_count": '[class*="chat"] [class*="count"], [class*="comment-wrapper"] span',
-    "note_tags": '[class*="tag"] a, a[href*="/search_result?keyword="]',
-    "note_author": '[class*="author"] [class*="name"], [class*="user-nickname"]',
-    "note_time": '[class*="date"], [class*="time"], time',
-    "note_images": '#noteContainer img[src*="xhscdn"], [class*="slide"] img',
-    "comment_item": '[class*="comment-item"], [class*="comment-inner"]',
-    "comment_content": '[class*="content"]',
-    "comment_author": '[class*="name"]',
-    "comment_likes": '[class*="like"] [class*="count"]',
+# DOM selectors for note detail page
+DETAIL_SELECTORS = {
+    "title": "#detail-title, [class*='title']",
+    "content": "#detail-desc, [class*='desc']",
+    "likes": ".like-wrapper .count, [class*='like'] [class*='count']",
+    "collects": ".collect-wrapper .count, [class*='collect'] [class*='count']",
+    "comments_count": ".chat-wrapper .count, [class*='chat'] [class*='count']",
+    "author": ".username, [class*='user-nickname'], [class*='author'] [class*='name']",
+    "time": "span.date, .publish-date, [class*='date']",
+    "tags": "#hash-tag-anchor-element, [class*='tag'] a, a[href*='/search_result?keyword=']",
+    "images": "img[src*='xhscdn'], [class*='slide'] img",
 }
 
 
@@ -92,17 +102,164 @@ def _extract_note_id_from_url(url: str) -> str:
     return ""
 
 
+def _parse_search_item(item: dict) -> RedNoteNote | None:
+    """Parse a single item from the search API JSON into a RedNoteNote."""
+    try:
+        note_id = item.get("id", "")
+        card = item.get("note_card", {})
+        if not card or not note_id:
+            return None
+
+        title = card.get("display_title", "Untitled")
+        note_type = card.get("type", "normal")
+
+        # Author
+        user = card.get("user", {})
+        author = RedNoteAuthor(
+            id=user.get("user_id", ""),
+            nickname=user.get("nickname") or user.get("nick_name", "Unknown"),
+            avatar=user.get("avatar"),
+        )
+
+        # Engagement
+        interact = card.get("interact_info", {})
+        likes = _parse_count(str(interact.get("liked_count", "0")))
+        collects = _parse_count(str(interact.get("collected_count", "0")))
+        comments_count = _parse_count(str(interact.get("comment_count", "0")))
+        shares = _parse_count(str(interact.get("shared_count", "0")))
+
+        # Images
+        images = []
+        cover = card.get("cover", {})
+        cover_url = cover.get("url_default", "")
+        if cover_url:
+            images.append(cover_url)
+
+        for img in card.get("image_list", [])[1:]:  # Skip first (same as cover)
+            for info in img.get("info_list", []):
+                if info.get("image_scene") == "WB_DFT":
+                    images.append(info.get("url", ""))
+                    break
+
+        # Publish time (from corner tag like "3天前" or "2025-01-15")
+        publish_time = datetime.now(tz=UTC)
+        for tag in card.get("corner_tag_info", []):
+            if tag.get("type") == "publish_time":
+                time_text = tag.get("text", "")
+                publish_time = _parse_relative_time(time_text)
+                break
+
+        # Video
+        video_url = None
+        if note_type == "video":
+            video = card.get("video", {})
+            if video:
+                video_url = video.get("url", "")
+
+        # Tags from card (search results don't always include tags)
+        tags: list[str] = []
+
+        return RedNoteNote(
+            id=note_id,
+            title=title,
+            content="",  # Search results don't include full content
+            note_type=note_type,
+            images=images,
+            video_url=video_url,
+            likes=likes,
+            collects=collects,
+            comments_count=comments_count,
+            shares=shares,
+            tags=tags,
+            publish_time=publish_time,
+            author=author,
+        )
+    except Exception as e:
+        logger.debug("Failed to parse search item: %s", e)
+        return None
+
+
+def _parse_relative_time(text: str) -> datetime:
+    """Parse relative time strings like '3天前', '2小时前', '刚刚' into datetime."""
+    now = datetime.now(tz=UTC)
+    text = text.strip()
+    if not text:
+        return now
+
+    # Absolute date formats
+    for fmt in ["%Y-%m-%d", "%Y-%m-%d %H:%M", "%Y年%m月%d日"]:
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=UTC)
+        except ValueError:
+            continue
+
+    # Relative: "X天前", "X小时前", "X分钟前", "刚刚", "昨天"
+    from datetime import timedelta
+
+    if "刚刚" in text:
+        return now
+    if "昨天" in text:
+        return now - timedelta(days=1)
+
+    match = re.search(r"(\d+)\s*天前", text)
+    if match:
+        return now - timedelta(days=int(match.group(1)))
+    match = re.search(r"(\d+)\s*小时前", text)
+    if match:
+        return now - timedelta(hours=int(match.group(1)))
+    match = re.search(r"(\d+)\s*分钟前", text)
+    if match:
+        return now - timedelta(minutes=int(match.group(1)))
+
+    return now
+
+
+def _parse_comment_item(item: dict) -> RedNoteComment:
+    """Parse a single comment from the comment API JSON."""
+    user_info = item.get("user_info", {})
+    author = RedNoteAuthor(
+        id=user_info.get("user_id", ""),
+        nickname=user_info.get("nickname", "Unknown"),
+        avatar=user_info.get("image"),
+    )
+
+    create_time = None
+    ts = item.get("create_time")
+    if ts:
+        try:
+            create_time = datetime.fromtimestamp(ts / 1000, tz=UTC)
+        except Exception:
+            pass
+
+    # Parse sub-comments (replies)
+    replies = []
+    for sub in item.get("sub_comments", []):
+        replies.append(_parse_comment_item(sub))
+
+    return RedNoteComment(
+        id=item.get("id", ""),
+        content=item.get("content", ""),
+        likes=_parse_count(str(item.get("like_count", "0"))),
+        author=author,
+        create_time=create_time,
+        replies=replies,
+    )
+
+
 class PlaywrightAdapter(RedNoteAdapter):
-    """Browser-based adapter that scrapes real data from xiaohongshu.com.
+    """Browser-based adapter that fetches real data from xiaohongshu.com.
+
+    Uses API response interception for search and comments (structured JSON),
+    and DOM extraction for note detail pages (rendered HTML).
 
     Authentication flow:
-    1. First run: Set REDNOTE_HEADLESS=false → browser opens → log in with your XHS account
+    1. First run: Set REDNOTE_HEADLESS=false → browser opens → log in
     2. Cookies are saved to ~/.rednote-mcp/cookies.json
     3. Subsequent runs: cookies are loaded automatically, headless mode works
 
     Environment variables:
         REDNOTE_HEADLESS: "true" (default) or "false" for visible browser
-        REDNOTE_COOKIE_PATH: Custom cookie file path (default: ~/.rednote-mcp/cookies.json)
+        REDNOTE_COOKIE_PATH: Custom cookie file path
     """
 
     def __init__(
@@ -118,6 +275,8 @@ class PlaywrightAdapter(RedNoteAdapter):
         self._browser = None
         self._context = None
         self._initialized = False
+        # Cache xsec_tokens from search results (note_id -> xsec_token)
+        self._xsec_tokens: dict[str, str] = {}
 
     async def _ensure_browser(self) -> None:
         """Lazy-initialize the browser and load cookies if available."""
@@ -152,17 +311,27 @@ class PlaywrightAdapter(RedNoteAdapter):
 
         self._initialized = True
 
-    async def _check_login_and_handle(self, page) -> bool:
-        """Check if we hit a login wall. If not headless, wait for user to log in.
+    async def _check_login(self, page) -> bool:
+        """Check if the session is authenticated by looking for login prompts.
 
-        Returns True if logged in successfully, False if login is required but headless.
+        Returns True if logged in, False otherwise.
+        If not headless and login is needed, waits for the user to log in.
         """
+        # Check for common login indicators
         try:
-            login_wall = await page.query_selector(SELECTORS["login_wall"])
-            if login_wall is None:
-                return True  # No login wall, we're good
+            login_el = await page.query_selector(
+                'text="登录后查看搜索结果", text="登录后推荐更懂你的笔记"'
+            )
+            if login_el is None:
+                # Also check if the web_session cookie exists
+                cookies = await self._context.cookies() if self._context else []
+                has_session = any(c["name"] == "web_session" for c in cookies)
+                if has_session:
+                    return True
+                # No login wall text found and no session — might still be OK
+                return True
         except Exception:
-            return True  # Selector not found, assume logged in
+            return True
 
         if self._headless:
             logger.error(
@@ -174,19 +343,17 @@ class PlaywrightAdapter(RedNoteAdapter):
         logger.info("Login required. Please log in to your XHS account in the browser...")
         logger.info("Waiting up to 120 seconds for login...")
 
-        try:
-            # Wait for login wall to disappear (user logged in)
-            await page.wait_for_selector(
-                SELECTORS["login_wall"],
-                state="hidden",
-                timeout=120000,
-            )
-            logger.info("Login successful! Saving cookies...")
-            await self._save_cookies()
-            return True
-        except Exception:
-            logger.error("Login timeout. Please try again.")
-            return False
+        for _ in range(60):
+            await page.wait_for_timeout(2000)
+            cookies = await self._context.cookies() if self._context else []
+            has_session = any(c["name"] == "web_session" for c in cookies)
+            if has_session:
+                logger.info("Login successful! Saving cookies...")
+                await self._save_cookies()
+                return True
+
+        logger.error("Login timeout. Please try again.")
+        return False
 
     async def _save_cookies(self) -> None:
         """Save browser cookies to disk for future sessions."""
@@ -203,180 +370,182 @@ class PlaywrightAdapter(RedNoteAdapter):
         except Exception as e:
             logger.warning("Failed to save cookies: %s", e)
 
+    # ------------------------------------------------------------------
+    # search_notes — intercepts the JSON API response
+    # ------------------------------------------------------------------
+
     async def search_notes(
         self,
         query: str,
         sort: str = "hot",
         limit: int = 20,
     ) -> tuple[list[RedNoteNote], int]:
-        """Search RedNote notes using the browser."""
+        """Search RedNote notes by intercepting the internal search API."""
         await self._ensure_browser()
         assert self._context is not None
 
         page = await self._context.new_page()
         notes: list[RedNoteNote] = []
+        api_data: dict | None = None
+
+        async def _capture_search(response):
+            nonlocal api_data
+            if SEARCH_API in response.url:
+                try:
+                    api_data = await response.json()
+                except Exception:
+                    pass
+
+        page.on("response", _capture_search)
 
         try:
-            sort_param = "popularity_descending" if sort == "hot" else "time_descending"
+            sort_map = {
+                "hot": "popularity_descending",
+                "recent": "time_descending",
+                "relevant": "general",
+            }
+            sort_param = sort_map.get(sort, "general")
             url = (
                 f"{XHS_SEARCH_URL}?keyword={quote(query)}"
                 f"&source=web_search_result_note&type=51&sort={sort_param}"
             )
             await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
-            await page.wait_for_timeout(3000)  # Wait for dynamic content
+            await page.wait_for_timeout(CONTENT_WAIT_MS)
 
-            if not await self._check_login_and_handle(page):
+            if not await self._check_login(page):
                 return [], 0
 
-            # After login, reload the search page
-            await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
-            await page.wait_for_timeout(3000)
+            # If login happened, we need to reload
+            if api_data is None:
+                await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
+                await page.wait_for_timeout(CONTENT_WAIT_MS)
 
-            # Try to find note cards
-            cards = await page.query_selector_all(SELECTORS["search_note_card"])
-            if not cards:
-                cards = await page.query_selector_all(SELECTORS["search_note_card_alt"])
-
-            for card in cards[:limit]:
-                try:
-                    note = await self._parse_search_card(card, page)
+            if api_data and api_data.get("success") is not False:
+                items = api_data.get("data", {}).get("items", [])
+                for item in items[:limit]:
+                    note = _parse_search_item(item)
                     if note:
                         notes.append(note)
-                except Exception as e:
-                    logger.debug("Failed to parse card: %s", e)
-                    continue
+                        # Cache xsec_token for later detail/comment lookups
+                        xsec = item.get("xsec_token", "")
+                        if xsec:
+                            self._xsec_tokens[note.id] = xsec
+                logger.info(
+                    "Search '%s': parsed %d notes from API (%d items)",
+                    query,
+                    len(notes),
+                    len(items),
+                )
+            else:
+                logger.warning(
+                    "Search API returned no data or failed. api_data=%s",
+                    json.dumps(api_data, ensure_ascii=False)[:200] if api_data else "None",
+                )
 
-            # Save cookies after successful search
             await self._save_cookies()
 
         except Exception as e:
             logger.error("Search failed: %s", e)
         finally:
+            page.remove_listener("response", _capture_search)
             await page.close()
 
         return notes, len(notes)
 
-    async def _parse_search_card(self, card, page) -> RedNoteNote | None:
-        """Parse a search result card element into a RedNoteNote."""
-        # Get the link to the note
-        link = await card.query_selector("a[href*='/explore/']")
-        if not link:
-            link = await card.query_selector("a")
-        if not link:
-            return None
-
-        href = await link.get_attribute("href") or ""
-        note_id = _extract_note_id_from_url(href)
-        if not note_id:
-            return None
-
-        # Title
-        title_el = await card.query_selector('[class*="title"], .title, h3, span')
-        title = (await title_el.inner_text()).strip() if title_el else "Untitled"
-
-        # Author
-        author_el = await card.query_selector('[class*="author"], [class*="name"]')
-        author_name = (await author_el.inner_text()).strip() if author_el else "Unknown"
-
-        # Likes
-        likes_el = await card.query_selector('[class*="like"] span, [class*="count"]')
-        likes_text = (await likes_el.inner_text()).strip() if likes_el else "0"
-        likes = _parse_count(likes_text)
-
-        # Cover image
-        img_el = await card.query_selector("img")
-        cover_url = await img_el.get_attribute("src") if img_el else None
-        images = [cover_url] if cover_url else []
-
-        return RedNoteNote(
-            id=note_id,
-            title=title,
-            content="",  # Content requires visiting the detail page
-            likes=likes,
-            images=images,
-            publish_time=datetime.now(tz=UTC),
-            author=RedNoteAuthor(id="", nickname=author_name),
-        )
+    # ------------------------------------------------------------------
+    # get_note_detail — extracts from rendered DOM
+    # ------------------------------------------------------------------
 
     async def get_note_detail(self, note_id: str) -> RedNoteNote | None:
-        """Get full details of a note by visiting its page."""
+        """Get full details of a note by visiting its page and extracting DOM."""
         await self._ensure_browser()
         assert self._context is not None
 
         page = await self._context.new_page()
 
         try:
+            # Build URL with xsec_token if available (required by XHS to load the note)
             url = f"{XHS_EXPLORE_URL}/{note_id}"
+            xsec = self._xsec_tokens.get(note_id, "")
+            if xsec:
+                url += f"?xsec_token={quote(xsec)}&xsec_source=pc_search"
             await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(CONTENT_WAIT_MS)
 
-            if not await self._check_login_and_handle(page):
+            if not await self._check_login(page):
                 return None
 
             # Title
-            title_el = await page.query_selector(SELECTORS["note_title"])
-            title = (await title_el.inner_text()).strip() if title_el else "Untitled"
+            title = "Untitled"
+            title_el = await page.query_selector(DETAIL_SELECTORS["title"])
+            if title_el:
+                title = (await title_el.inner_text()).strip()
 
-            # Content
-            content_el = await page.query_selector(SELECTORS["note_content"])
-            content = (await content_el.inner_text()).strip() if content_el else ""
+            # Content (description)
+            content = ""
+            content_el = await page.query_selector(DETAIL_SELECTORS["content"])
+            if content_el:
+                content = (await content_el.inner_text()).strip()
 
-            # Engagement
+            # Engagement metrics
             likes = 0
-            likes_el = await page.query_selector(SELECTORS["note_likes"])
+            likes_el = await page.query_selector(DETAIL_SELECTORS["likes"])
             if likes_el:
                 likes = _parse_count(await likes_el.inner_text())
 
             collects = 0
-            collects_el = await page.query_selector(SELECTORS["note_collects"])
+            collects_el = await page.query_selector(DETAIL_SELECTORS["collects"])
             if collects_el:
                 collects = _parse_count(await collects_el.inner_text())
 
             comments_count = 0
-            comments_el = await page.query_selector(SELECTORS["note_comments_count"])
+            comments_el = await page.query_selector(DETAIL_SELECTORS["comments_count"])
             if comments_el:
                 comments_count = _parse_count(await comments_el.inner_text())
 
             # Author
-            author_el = await page.query_selector(SELECTORS["note_author"])
-            author_name = (await author_el.inner_text()).strip() if author_el else "Unknown"
+            author_name = "Unknown"
+            author_el = await page.query_selector(DETAIL_SELECTORS["author"])
+            if author_el:
+                author_name = (await author_el.inner_text()).strip()
 
-            # Tags
-            tag_elements = await page.query_selector_all(SELECTORS["note_tags"])
-            tags = []
+            # Tags (from hashtags in the description)
+            tags: list[str] = []
+            tag_elements = await page.query_selector_all(DETAIL_SELECTORS["tags"])
             for tag_el in tag_elements:
                 tag_text = (await tag_el.inner_text()).strip().lstrip("#")
                 if tag_text:
                     tags.append(tag_text)
 
+            # Also extract hashtags from the content text itself
+            if content:
+                for m in re.finditer(r"#(\S+?)(?:\s|$)", content):
+                    tag_val = m.group(1).strip()
+                    if tag_val and tag_val not in tags:
+                        tags.append(tag_val)
+
             # Images
-            img_elements = await page.query_selector_all(SELECTORS["note_images"])
-            images = []
+            images: list[str] = []
+            img_elements = await page.query_selector_all(DETAIL_SELECTORS["images"])
             for img_el in img_elements:
                 src = await img_el.get_attribute("src")
                 if src and "xhscdn" in src:
                     images.append(src)
 
             # Publish time
-            time_el = await page.query_selector(SELECTORS["note_time"])
-            time_text = (await time_el.inner_text()).strip() if time_el else ""
-            publish_time = datetime.now(tz=UTC)  # Fallback to now
-            if time_text:
-                try:
-                    # Try common XHS date formats
-                    for fmt in ["%Y-%m-%d", "%Y-%m-%d %H:%M", "%m-%d", "%Y年%m月%d日"]:
-                        try:
-                            publish_time = datetime.strptime(time_text, fmt).replace(tzinfo=UTC)
-                            break
-                        except ValueError:
-                            continue
-                except Exception:
-                    pass
+            publish_time = datetime.now(tz=UTC)
+            time_el = await page.query_selector(DETAIL_SELECTORS["time"])
+            if time_el:
+                time_text = (await time_el.inner_text()).strip()
+                # Remove location suffix like "3天前 河北" → "3天前"
+                time_part = time_text.split()[0] if time_text else ""
+                if time_part:
+                    publish_time = _parse_relative_time(time_part)
 
-            # Check if video
-            video_el = await page.query_selector("video")
+            # Video
             video_url = None
             note_type = "normal"
+            video_el = await page.query_selector("video")
             if video_el:
                 video_url = await video_el.get_attribute("src")
                 note_type = "video"
@@ -399,69 +568,75 @@ class PlaywrightAdapter(RedNoteAdapter):
             )
 
         except Exception as e:
-            logger.error("Failed to get note detail: %s", e)
+            logger.error("Failed to get note detail for %s: %s", note_id, e)
             return None
         finally:
             await page.close()
+
+    # ------------------------------------------------------------------
+    # get_note_comments — intercepts the JSON comment API
+    # ------------------------------------------------------------------
 
     async def get_note_comments(
         self,
         note_id: str,
         limit: int = 20,
     ) -> list[RedNoteComment]:
-        """Get comments for a note."""
+        """Get comments for a note by intercepting the comment API."""
         await self._ensure_browser()
         assert self._context is not None
 
         page = await self._context.new_page()
         comments: list[RedNoteComment] = []
+        api_data: dict | None = None
+
+        async def _capture_comments(response):
+            nonlocal api_data
+            if COMMENT_API in response.url and note_id in response.url:
+                try:
+                    api_data = await response.json()
+                except Exception:
+                    pass
+
+        page.on("response", _capture_comments)
 
         try:
+            # Build URL with xsec_token if available
             url = f"{XHS_EXPLORE_URL}/{note_id}"
+            xsec = self._xsec_tokens.get(note_id, "")
+            if xsec:
+                url += f"?xsec_token={quote(xsec)}&xsec_source=pc_search"
             await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(CONTENT_WAIT_MS)
 
-            if not await self._check_login_and_handle(page):
+            if not await self._check_login(page):
                 return []
 
-            # Scroll to load comments
-            await page.evaluate("window.scrollBy(0, 500)")
-            await page.wait_for_timeout(2000)
+            # Scroll down to trigger comment loading
+            await page.evaluate("window.scrollBy(0, 800)")
+            await page.wait_for_timeout(3000)
 
-            comment_items = await page.query_selector_all(SELECTORS["comment_item"])
-
-            for item in comment_items[:limit]:
-                try:
-                    content_el = await item.query_selector(SELECTORS["comment_content"])
-                    content = (await content_el.inner_text()).strip() if content_el else ""
-
-                    author_el = await item.query_selector(SELECTORS["comment_author"])
-                    author_name = (
-                        (await author_el.inner_text()).strip() if author_el else "Unknown"
-                    )
-
-                    likes_el = await item.query_selector(SELECTORS["comment_likes"])
-                    likes = _parse_count(await likes_el.inner_text()) if likes_el else 0
-
-                    if content:
-                        comments.append(
-                            RedNoteComment(
-                                id=f"comment_{len(comments)}",
-                                content=content,
-                                likes=likes,
-                                author=RedNoteAuthor(id="", nickname=author_name),
-                            )
-                        )
-                except Exception as e:
-                    logger.debug("Failed to parse comment: %s", e)
-                    continue
+            if api_data and api_data.get("success"):
+                raw_comments = api_data.get("data", {}).get("comments", [])
+                for item in raw_comments[:limit]:
+                    comments.append(_parse_comment_item(item))
+                logger.info(
+                    "Comments for %s: parsed %d from API", note_id, len(comments)
+                )
+            else:
+                logger.warning("Comment API returned no data for %s", note_id)
 
         except Exception as e:
-            logger.error("Failed to get comments: %s", e)
+            logger.error("Failed to get comments for %s: %s", note_id, e)
         finally:
+            page.remove_listener("response", _capture_comments)
             await page.close()
 
         return comments
+
+    # ------------------------------------------------------------------
+    # get_author_notes — extracts from profile page DOM
+    # ------------------------------------------------------------------
 
     async def get_author_notes(
         self,
@@ -478,9 +653,9 @@ class PlaywrightAdapter(RedNoteAdapter):
         try:
             url = f"{XHS_USER_URL}/{author_id}"
             await page.goto(url, wait_until="domcontentloaded", timeout=self._timeout)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(CONTENT_WAIT_MS)
 
-            if not await self._check_login_and_handle(page):
+            if not await self._check_login(page):
                 return []
 
             # Find note cards on profile page
