@@ -453,7 +453,7 @@ class MyAdapter(RedNoteAdapter):
 
 ```bash
 # Clone and install
-git clone https://github.com/xueliandeng/rednote-analyzer-mcp.git
+git clone https://github.com/ShellyDeng08/rednote-analyzer-mcp.git
 cd rednote-analyzer-mcp
 uv sync
 
@@ -666,7 +666,7 @@ Claude Desktop 配置（真实数据）：
 ## 开发
 
 ```bash
-git clone https://github.com/xueliandeng/rednote-analyzer-mcp.git
+git clone https://github.com/ShellyDeng08/rednote-analyzer-mcp.git
 cd rednote-analyzer-mcp
 uv sync
 

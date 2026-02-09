@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "An MCP server that enables LLMs to analyze, understand, and generate RedNote (小红书) content through structured tools and prompts."
 readme = "README.md"
 authors = [
-    { name = "xueliandeng", email = "xuelian.xldeng@bytedance.com" }
+    { name = "ShellyDeng08", email = "xldeng0808@gmail.com" }
 ]
 requires-python = ">=3.11"
 license = "MIT"
