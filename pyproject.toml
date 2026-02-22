@@ -1,6 +1,6 @@
 [project]
 name = "rednote-analyzer-mcp"
-version = "0.1.1"
+version = "0.1.6"
 description = "An MCP server that enables LLMs to analyze, understand, and generate RedNote (小红书) content through structured tools and prompts."
 readme = "README.md"
 authors = [
@@ -22,15 +22,12 @@ classifiers = [
 dependencies = [
     "mcp[cli]",
     "pydantic>=2.0",
+    "playwright>=1.40",
 ]
 
 [project.scripts]
 rednote-analyzer-mcp = "rednote_analyzer_mcp.server:main"
-
-[project.optional-dependencies]
-browser = [
-    "playwright>=1.40",
-]
+rednote-login = "rednote_analyzer_mcp.login:main"
 
 [build-system]
 requires = ["uv_build>=0.10.0,<0.11.0"]

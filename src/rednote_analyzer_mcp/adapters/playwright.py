@@ -23,9 +23,11 @@ Install::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote
@@ -40,6 +42,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_COOKIE_PATH = Path.home() / ".rednote-mcp" / "cookies.json"
 DEFAULT_TIMEOUT = 30000
 CONTENT_WAIT_MS = 8000  # Time to wait for SPA content to load
+
+# Rate limiting settings (to avoid triggering XHS anti-scraping)
+MIN_REQUEST_INTERVAL_MS = 3000  # Minimum 3 seconds between requests
+MAX_REQUESTS_PER_MINUTE = 10  # Maximum 10 requests per minute
 XHS_BASE_URL = "https://www.xiaohongshu.com"
 XHS_SEARCH_URL = f"{XHS_BASE_URL}/search_result"
 XHS_EXPLORE_URL = f"{XHS_BASE_URL}/explore"
@@ -277,6 +283,9 @@ class PlaywrightAdapter(RedNoteAdapter):
         self._initialized = False
         # Cache xsec_tokens from search results (note_id -> xsec_token)
         self._xsec_tokens: dict[str, str] = {}
+        # Rate limiting state
+        self._last_request_time: float = 0
+        self._request_times: list[float] = []  # Timestamps of recent requests
 
     async def _ensure_browser(self) -> None:
         """Lazy-initialize the browser and load cookies if available."""
@@ -310,6 +319,41 @@ class PlaywrightAdapter(RedNoteAdapter):
                 logger.warning("Failed to load cookies: %s", e)
 
         self._initialized = True
+
+    async def _rate_limit(self) -> None:
+        """Enforce rate limiting to avoid triggering XHS anti-scraping.
+
+        - Ensures minimum interval between requests (3 seconds)
+        - Limits to maximum 10 requests per minute
+        """
+        current_time = time.time()
+
+        # Clean up old request timestamps (older than 60 seconds)
+        self._request_times = [t for t in self._request_times if current_time - t < 60]
+
+        # Check requests per minute limit
+        if len(self._request_times) >= MAX_REQUESTS_PER_MINUTE:
+            oldest_in_window = self._request_times[0]
+            wait_time = 60 - (current_time - oldest_in_window)
+            if wait_time > 0:
+                logger.info(
+                    "Rate limit: %d requests in last minute, waiting %.1f seconds...",
+                    len(self._request_times),
+                    wait_time,
+                )
+                await asyncio.sleep(wait_time)
+                current_time = time.time()
+
+        # Check minimum interval between requests
+        time_since_last = (current_time - self._last_request_time) * 1000  # Convert to ms
+        if time_since_last < MIN_REQUEST_INTERVAL_MS:
+            wait_ms = MIN_REQUEST_INTERVAL_MS - time_since_last
+            logger.debug("Rate limit: waiting %.0f ms before next request", wait_ms)
+            await asyncio.sleep(wait_ms / 1000)
+
+        # Record this request
+        self._last_request_time = time.time()
+        self._request_times.append(self._last_request_time)
 
     async def _check_login(self, page) -> bool:
         """Check if the session is authenticated by looking for login prompts.
@@ -382,6 +426,7 @@ class PlaywrightAdapter(RedNoteAdapter):
     ) -> tuple[list[RedNoteNote], int]:
         """Search RedNote notes by intercepting the internal search API."""
         await self._ensure_browser()
+        await self._rate_limit()
         assert self._context is not None
 
         page = await self._context.new_page()
@@ -459,6 +504,7 @@ class PlaywrightAdapter(RedNoteAdapter):
     async def get_note_detail(self, note_id: str) -> RedNoteNote | None:
         """Get full details of a note by visiting its page and extracting DOM."""
         await self._ensure_browser()
+        await self._rate_limit()
         assert self._context is not None
 
         page = await self._context.new_page()
@@ -584,6 +630,7 @@ class PlaywrightAdapter(RedNoteAdapter):
     ) -> list[RedNoteComment]:
         """Get comments for a note by intercepting the comment API."""
         await self._ensure_browser()
+        await self._rate_limit()
         assert self._context is not None
 
         page = await self._context.new_page()
@@ -645,6 +692,7 @@ class PlaywrightAdapter(RedNoteAdapter):
     ) -> list[RedNoteNote]:
         """Get notes from a specific author's profile page."""
         await self._ensure_browser()
+        await self._rate_limit()
         assert self._context is not None
 
         page = await self._context.new_page()
