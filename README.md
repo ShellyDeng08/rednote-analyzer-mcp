@@ -8,6 +8,8 @@
 
 [English](#english) | [中文](#安装)
 
+![Screenshot](https://raw.githubusercontent.com/ShellyDeng08/rednote-analyzer-mcp/master/assets/screenshot.png)
+
 ---
 
 ## 先决条件
