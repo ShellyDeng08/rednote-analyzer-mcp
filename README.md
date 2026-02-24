@@ -1,10 +1,15 @@
-# RedNote Analyzer MCP
+# RedNote Analyzer MCP - 小红书 AI 分析工具
 
 [![PyPI version](https://img.shields.io/pypi/v/rednote-analyzer-mcp.svg)](https://pypi.org/project/rednote-analyzer-mcp/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
 
-让 AI 助手能够**搜索、分析、生成**小红书内容的 MCP 服务器。
+> **MCP Server for Xiaohongshu (小红书/RED)** - 让 Claude、ChatGPT 等 AI 助手能够**搜索、分析、生成**小红书内容。
+>
+> A Model Context Protocol server that enables AI assistants to search, analyze, and generate content for China's leading lifestyle social media platform.
+
+**Keywords**: 小红书 API, 小红书爬虫, 小红书数据分析, XHS API, RedNote API, MCP Server, Claude Tools, AI Content Generation, 小红书笔记分析, 爆款分析
 
 [English](#english) | [中文](#安装)
 
@@ -226,6 +231,16 @@ MIT | [开发指南](CONTRIBUTING.md)
 ---
 
 # English
+
+## What is RedNote Analyzer MCP?
+
+RedNote Analyzer MCP is a **Model Context Protocol (MCP) server** that connects AI assistants like Claude to Xiaohongshu (小红书/RED/RedNote), China's most popular lifestyle social media platform with 300M+ users.
+
+### Use Cases
+- **Content Research**: Search and analyze trending posts on any topic
+- **Viral Pattern Analysis**: Extract what makes content go viral on RedNote
+- **Content Generation**: Generate RedNote-style posts with AI assistance
+- **Market Research**: Understand Chinese consumer trends and preferences
 
 ## Prerequisites
 

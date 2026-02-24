@@ -8,22 +8,53 @@ authors = [
 ]
 requires-python = ">=3.11"
 license = "MIT"
-keywords = ["mcp", "rednote", "xiaohongshu", "小红书", "llm", "ai"]
+keywords = [
+    "mcp",
+    "mcp-server",
+    "model-context-protocol",
+    "rednote",
+    "xiaohongshu",
+    "小红书",
+    "xhs",
+    "llm",
+    "ai",
+    "claude",
+    "anthropic",
+    "content-analysis",
+    "social-media",
+    "chinese-social-media",
+    "content-generation",
+    "web-scraping",
+    "playwright",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Text Processing :: General",
+    "Natural Language :: Chinese (Simplified)",
+    "Natural Language :: English",
 ]
 dependencies = [
     "mcp[cli]",
     "pydantic>=2.0",
     "playwright>=1.40",
 ]
+
+[project.urls]
+Homepage = "https://github.com/ShellyDeng08/rednote-analyzer-mcp"
+Documentation = "https://github.com/ShellyDeng08/rednote-analyzer-mcp#readme"
+Repository = "https://github.com/ShellyDeng08/rednote-analyzer-mcp"
+Issues = "https://github.com/ShellyDeng08/rednote-analyzer-mcp/issues"
+Changelog = "https://github.com/ShellyDeng08/rednote-analyzer-mcp/releases"
 
 [project.scripts]
 rednote-analyzer-mcp = "rednote_analyzer_mcp.server:main"
