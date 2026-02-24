@@ -1,9 +1,12 @@
 # RedNote Analyzer MCP - 小红书 AI 分析工具
 
 [![PyPI version](https://img.shields.io/pypi/v/rednote-analyzer-mcp.svg)](https://pypi.org/project/rednote-analyzer-mcp/)
+[![PyPI downloads](https://img.shields.io/pypi/dm/rednote-analyzer-mcp.svg)](https://pypi.org/project/rednote-analyzer-mcp/)
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![MCP Compatible](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io/)
+
+**Install**: `pipx install rednote-analyzer-mcp` | **PyPI**: [pypi.org/project/rednote-analyzer-mcp](https://pypi.org/project/rednote-analyzer-mcp/)
 
 > **MCP Server for Xiaohongshu (小红书/RED)** - 让 Claude、ChatGPT 等 AI 助手能够**搜索、分析、生成**小红书内容。
 >
