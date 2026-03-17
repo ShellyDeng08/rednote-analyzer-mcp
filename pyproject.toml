@@ -18,6 +18,7 @@ keywords = [
     "xhs",
     "llm",
     "ai",
+    "ai-tools",
     "claude",
     "anthropic",
     "content-analysis",
@@ -26,6 +27,8 @@ keywords = [
     "content-generation",
     "web-scraping",
     "playwright",
+    "automation",
+    "nlp",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -40,6 +43,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
     "Topic :: Text Processing :: General",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
     "Natural Language :: Chinese (Simplified)",
     "Natural Language :: English",
 ]
